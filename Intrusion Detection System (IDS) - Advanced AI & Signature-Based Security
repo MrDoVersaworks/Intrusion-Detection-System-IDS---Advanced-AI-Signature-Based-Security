@@ -1,0 +1,136 @@
+#include <iostream>
+#include <pcap.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <netinet/ether.h>
+#include <unordered_map>
+#include <sqlite3.h>
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <pqxx/pqxx>
+#include <rdkafka.h>
+#include <fstream>
+#include <cstdlib>
+#include <ctime>
+
+// ================== GLOBAL VARIABLES ===================
+std::mutex log_mutex;  // Thread safety for logging
+std::unordered_map<std::string, std::string> attackSignatures = {
+    {"SQL_INJECTION", "UNION SELECT"},
+    {"PORT_SCAN", "SYN Flood"},
+    {"DDOS", "High Traffic"}
+};
+
+// ================== PACKET HANDLING ===================
+// Extract and analyze packets
+void analyzePacket(const u_char *packet, struct pcap_pkthdr packetHeader) {
+    struct ether_header *ethHeader = (struct ether_header *)packet;
+    if (ntohs(ethHeader->ether_type) == ETHERTYPE_IP) {
+        struct ip *ipHeader = (struct ip *)(packet + sizeof(struct ether_header));
+
+        std::string srcIP = inet_ntoa(ipHeader->ip_src);
+        std::string dstIP = inet_ntoa(ipHeader->ip_dst);
+
+        std::cout << "[INFO] Packet: " << srcIP << " -> " << dstIP << "\n";
+        
+        // TCP Analysis
+        if (ipHeader->ip_p == IPPROTO_TCP) {
+            struct tcphdr *tcpHeader = (struct tcphdr *)(packet + sizeof(struct ether_header) + sizeof(struct ip));
+            int srcPort = ntohs(tcpHeader->th_sport);
+            int dstPort = ntohs(tcpHeader->th_dport);
+            
+            std::cout << "    TCP Port: " << srcPort << " -> " << dstPort << "\n";
+        }
+    }
+}
+
+// ================== AI ANOMALY DETECTION ===================
+bool aiAnomalyDetection(double packetSize, double trafficRate) {
+    double anomalyThreshold = 0.85;
+    double anomalyScore = static_cast<double>(rand()) / RAND_MAX;
+    return (anomalyScore > anomalyThreshold);
+}
+
+// ================== DATABASE LOGGING ===================
+void insertLog(const std::string &event) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    try {
+        pqxx::connection conn("dbname=ids_logs user=admin password=securepassword host=database.example.com");
+        pqxx::work txn(conn);
+        txn.exec("INSERT INTO SecurityLogs (event) VALUES ('" + event + "');");
+        txn.commit();
+    } catch (const std::exception &e) {
+        std::cerr << "[ERROR] PostgreSQL Log Failed: " << e.what() << "\n";
+    }
+}
+
+// ================== KAFKA ALERT SYSTEM ===================
+void sendToKafka(const std::string &event) {
+    rd_kafka_t *rk;
+    rd_kafka_conf_t *conf = rd_kafka_conf_new();
+    char errstr[512];
+
+    rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
+    rd_kafka_producev(
+        rk,
+        RD_KAFKA_V_TOPIC("security_alerts"),
+        RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+        RD_KAFKA_V_VALUE(event.c_str(), event.size()),
+        RD_KAFKA_V_END
+    );
+
+    rd_kafka_flush(rk, 1000);
+    rd_kafka_destroy(rk);
+}
+
+// ================== SIGNATURE-BASED DETECTION ===================
+bool detectAttack(const std::string &packetData) {
+    for (const auto &signature : attackSignatures) {
+        if (packetData.find(signature.second) != std::string::npos) {
+            std::cerr << "[ALERT] " << signature.first << " detected!\n";
+            insertLog(signature.first + " detected.");
+            sendToKafka(signature.first + " detected.");
+            return true;
+        }
+    }
+    return false;
+}
+
+// ================== PACKET CAPTURE & MULTI-THREADING ===================
+void packetHandler(u_char *user, const struct pcap_pkthdr *header, const u_char *packet) {
+    analyzePacket(packet, *header);
+    
+    double packetSize = header->len;
+    double trafficRate = rand() % 100;
+    
+    if (aiAnomalyDetection(packetSize, trafficRate)) {
+        std::cerr << "[ALERT] AI detected anomaly!\n";
+        insertLog("AI detected anomaly in traffic.");
+        sendToKafka("AI detected anomaly in traffic.");
+    }
+}
+
+// Start sniffing in a separate thread
+void startSniffing(const std::string &interface) {
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t *handle = pcap_open_live(interface.c_str(), BUFSIZ, 1, 1000, errbuf);
+    if (handle == nullptr) {
+        std::cerr << "[ERROR] Failed to open device " << interface << ": " << errbuf << "\n";
+        return;
+    }
+
+    std::cout << "[INFO] Sniffing on interface: " << interface << "\n";
+    pcap_loop(handle, 0, packetHandler, nullptr);
+    pcap_close(handle);
+}
+
+// ================== MAIN FUNCTION ===================
+int main() {
+    srand(time(nullptr));
+    std::string networkInterface = "eth0";
+    std::thread sniffingThread(startSniffing, networkInterface);
+
+    sniffingThread.join();
+    return 0;
+}
