@@ -44,6 +44,7 @@ bash
 Copy
 Edit
 git clone https://github.com/MrDoVersaworks/Intrusion-Detection-System-IDS---Advanced-AI-Signature-Based-Security.git
+cd Intrusion-Detection-System-IDS---Advanced-AI-Signature-Based-Security
 Compile the IDS
 Compile the code using g++:
 bash
